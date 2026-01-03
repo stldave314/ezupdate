@@ -13,7 +13,7 @@ REPORT_FILE="$LOG_DIR/ezupdate_report.txt"
 EMAIL_ADDR=""
 ROLLBACK_MODE=false
 ROLLBACK_FILE=""
-NON_INTERACTIVE=false
+NON_INTERACTIVE=true # Always non-interactive selection now
 REBOOT_REQUIRED=false
 
 TEMP_DIR=$(mktemp -d)
@@ -23,21 +23,19 @@ trap "rm -rf $TEMP_DIR" EXIT
 
 # --- Logging & Helper Functions ---
 
-# Ensure log directory exists (needs sudo usually)
 init_logs() {
     if [ ! -d "$LOG_DIR" ]; then
         mkdir -p "$LOG_DIR" 2>/dev/null
         if [ $? -ne 0 ]; then
-            # Fallback to local if permission denied
             LOG_DIR="$HOME/.ezupdate/logs"
-HISTORY_LOG="$LOG_DIR/history.csv"
-RUN_LOG="$LOG_DIR/ezupdate_run.log"
-REPORT_FILE="$LOG_DIR/ezupdate_report.txt"
-mkdir -p "$LOG_DIR"
-echo "Warning: Could not write to /var/log. Using $LOG_DIR"
+            HISTORY_LOG="$LOG_DIR/history.csv"
+            RUN_LOG="$LOG_DIR/ezupdate_run.log"
+            REPORT_FILE="$LOG_DIR/ezupdate_report.txt"
+            mkdir -p "$LOG_DIR"
+            echo "Warning: Could not write to /var/log. Using $LOG_DIR"
         fi
     fi
-touch "$HISTORY_LOG" "$RUN_LOG" "$REPORT_FILE"
+    touch "$HISTORY_LOG" "$RUN_LOG" "$REPORT_FILE"
 }
 
 log() {
@@ -46,19 +44,17 @@ log() {
     echo "$msg" >> "$RUN_LOG"
 }
 
-# CSV Format: TIMESTAMP|BATCH_ID|MANAGER|PACKAGE|ACTION|OLD_VAL|NEW_VAL
 record_transaction() {
     echo "$1|$2|$3|$4|$5|$6|$7" >> "$HISTORY_LOG"
 }
 
 show_help() {
-    echo "EzUpdate - System Update Wrapper v2.0"
+    echo "EzUpdate - System Update Wrapper v2.1"
     echo ""
     echo "Usage: sudo ./ezupdate.sh [options]"
     echo ""
     echo "Options:"
     echo "  -h, --help           Show this help message."
-    echo "  -y, --yes            Non-interactive mode (auto-accept updates)."
     echo "  --log-dir <path>     Specify custom log directory."
     echo "  --rollback <file>    Rollback changes based on a history file (or 'latest' for last run)."
     echo "  --email <address>    Email the report to this address after completion."
@@ -73,25 +69,25 @@ while [[ $# -gt 0 ]]; do
             show_help
             exit 0
             ;;
-        -y|--yes)
-            NON_INTERACTIVE=true
-            shift
-            ;;
         --log-dir)
             LOG_DIR="$2"
-HISTORY_LOG="$LOG_DIR/history.csv"
-RUN_LOG="$LOG_DIR/ezupdate_run.log"
-REPORT_FILE="$LOG_DIR/ezupdate_report.txt"
-shift 2
+            HISTORY_LOG="$LOG_DIR/history.csv"
+            RUN_LOG="$LOG_DIR/ezupdate_run.log"
+            REPORT_FILE="$LOG_DIR/ezupdate_report.txt"
+            shift 2
             ;;
         --rollback)
             ROLLBACK_MODE=true
             ROLLBACK_FILE="$2"
-shift 2
+            shift 2
             ;;
         --email)
             EMAIL_ADDR="$2"
-shift 2
+            shift 2
+            ;;
+        -y|--yes)
+            # Kept for compatibility, but selection is now always off
+            shift
             ;;
         *)
             echo "Unknown option: $1"
@@ -107,39 +103,16 @@ init_logs
 
 perform_rollback() {
     log "Starting Rollback Process..."
-    
     local target_file="$ROLLBACK_FILE"
-    
-    if [[ "$ROLLBACK_FILE" == "latest" ]]; then
-        target_file="$HISTORY_LOG"
-        # In a real scenario, we might want to filter only the last batch ID
-        # For this MVP, we parse the provided file.
-    fi
+    if [[ "$ROLLBACK_FILE" == "latest" ]]; then target_file="$HISTORY_LOG"; fi
+    if [ ! -f "$target_file" ]; then log "Error: Rollback file not found."; exit 1; fi
+    if ! command -v tac &> /dev/null; then log "Error: 'tac' missing."; exit 1; fi
 
-    if [ ! -f "$target_file" ]; then
-        log "Error: Rollback file '$target_file' not found."
-        exit 1
-    fi
-
-    # Read file in reverse order to undo latest changes first
-    # Using 'tac' to reverse lines
-    if ! command -v tac &> /dev/null; then
-        log "Error: 'tac' command not found. Cannot read log in reverse."
-        exit 1
-    fi
-
-    tac "$target_file" | while IFS='|' read -r TIMESTAMP BATCH_ID MANAGER PACKAGE ACTION OLD_VAL NEW_VAL;
-    do
-        # Basic validation
+    tac "$target_file" | while IFS='|' read -r TIMESTAMP BATCH_ID MANAGER PACKAGE ACTION OLD_VAL NEW_VAL; do
         if [[ -z "$PACKAGE" || -z "$MANAGER" ]]; then continue; fi
-
-        log "Reverting $MANAGER package: $PACKAGE to $OLD_VAL..."
-
+        log "Reverting $MANAGER: $PACKAGE..."
         case $MANAGER in
             APT)
-                # Attempt downgrade. 
-                # Note: OLD_VAL should be version string.
-                # If OLD_VAL is empty/none, it was a new install -> remove it.
                 if [[ "$OLD_VAL" == "NONE" ]]; then
                     sudo apt-get remove -y "$PACKAGE" >> "$RUN_LOG" 2>&1
                 else
@@ -147,26 +120,19 @@ perform_rollback() {
                 fi
                 ;;
             FLATPAK)
-                # OLD_VAL should be commit hash
                 flatpak update -y --commit="$OLD_VAL" "$PACKAGE" >> "$RUN_LOG" 2>&1
                 ;;
             SNAP)
-                # Snap revert is simple, doesn't always need version, but lets try
                 sudo snap revert "$PACKAGE" >> "$RUN_LOG" 2>&1
                 ;;
             DNF)
-                # DNF typically rolls back via transaction ID, not package.
-                # If we logged transaction ID in OLD_VAL for a bulk action...
                 if [[ "$PACKAGE" == "BULK_TRANSACTION" ]]; then
                     sudo dnf history undo -y "$OLD_VAL" >> "$RUN_LOG" 2>&1
-                else
-                    log "Skipping DNF single package rollback (not implemented safely)."
                 fi
                 ;;
         esac
     done
-
-    log "Rollback process completed (Best Effort)."
+    log "Rollback complete."
 }
 
 if $ROLLBACK_MODE; then
@@ -174,10 +140,9 @@ if $ROLLBACK_MODE; then
     exit 0
 fi
 
-# --- Detection ---
+# --- Main Logic ---
 
 MANAGERS=()
-
 detect_managers() {
     log "Detecting package managers..."
     if command -v apt-get &> /dev/null; then MANAGERS+=("apt"); fi
@@ -186,193 +151,96 @@ detect_managers() {
     if command -v snap &> /dev/null; then MANAGERS+=("snap"); fi
 }
 
-# --- Update Retrieval ---
-
-declare -A APT_UPDATES
-declare -A FLATPAK_UPDATES
-declare -A SNAP_UPDATES
-# DNF is bulk only for now
-
-fetch_updates() {
-    log "Fetching updates..."
-    
-    for mgr in "${MANAGERS[@]}"; do
-        case $mgr in
-            apt)
-                sudo DEBIAN_FRONTEND=noninteractive apt-get update -y >> "$RUN_LOG" 2>&1
-                apt list --upgradable 2>/dev/null | grep -v "Listing..." > "$TEMP_DIR/apt_raw"
-                while read -r line;
-                do
-                    pkg=$(echo "$line" | cut -d'/' -f1)
-                    ver=$(echo "$line" | awk '{print $2}')
-                    if [ -n "$pkg" ]; then APT_UPDATES["$pkg"]="$ver"; fi
-                done < "$TEMP_DIR/apt_raw"
-                ;;
-            dnf)
-                dnf check-update > "$TEMP_DIR/dnf_raw" 2>>"$RUN_LOG"
-                ;;
-            flatpak)
-                # Check System Flatpaks
-                flatpak remote-ls --updates --columns=application,name,commit > "$TEMP_DIR/flatpak_raw_sys" 2>>"$RUN_LOG"
-                while read -r line; do
-                    app_id=$(echo "$line" | awk '{print $1}')
-                    name=$(echo "$line" | cut -d' ' -f2-)
-                    if [ -n "$app_id" ]; then FLATPAK_UPDATES["SYS:$app_id"]="$name (System)"; fi
-                done < "$TEMP_DIR/flatpak_raw_sys"
-
-                # Check User Flatpaks (if running as sudo)
-                if [ -n "$SUDO_USER" ]; then
-                    sudo -u "$SUDO_USER" flatpak remote-ls --user --updates --columns=application,name,commit > "$TEMP_DIR/flatpak_raw_user" 2>>"$RUN_LOG"
-                    while read -r line; do
-                        app_id=$(echo "$line" | awk '{print $1}')
-                        name=$(echo "$line" | cut -d' ' -f2-)
-                        if [ -n "$app_id" ]; then FLATPAK_UPDATES["USR:$app_id"]="$name (User)"; fi
-                    done < "$TEMP_DIR/flatpak_raw_user"
-                fi
-                ;;
-            snap)
-                snap refresh --list > "$TEMP_DIR/snap_raw" 2>>"$RUN_LOG"
-                tail -n +2 "$TEMP_DIR/snap_raw" | while read -r line;
-                do
-                     name=$(echo "$line" | awk '{print $1}')
-                     ver=$(echo "$line" | awk '{print $2}')
-                     if [ -n "$name" ]; then SNAP_UPDATES["$name"]="$ver"; fi
-                done
-                ;;
-        esac
-    done
-}
-
-# --- Selection ---
-
-SELECTED_APT=()
-SELECTED_FLATPAK=()
-SELECTED_SNAP=()
-
-present_plan() {
-    if $NON_INTERACTIVE || ! command -v whiptail &> /dev/null; then
-        for pkg in "${!APT_UPDATES[@]}"; do SELECTED_APT+=("$pkg"); done
-        for pkg in "${!FLATPAK_UPDATES[@]}"; do SELECTED_FLATPAK+=("$pkg"); done
-        for pkg in "${!SNAP_UPDATES[@]}"; do SELECTED_SNAP+=("$pkg"); done
-        return
-    fi
-
-    ARGS=()
-    for pkg in "${!APT_UPDATES[@]}"; do ARGS+=("APT:$pkg" "Update $pkg" "ON"); done
-    for pkg in "${!FLATPAK_UPDATES[@]}"; do ARGS+=("FLATPAK:$pkg" "Update $pkg" "ON"); done
-    for pkg in "${!SNAP_UPDATES[@]}"; do ARGS+=("SNAP:$pkg" "Update $pkg" "ON"); done
-
-    if [ ${#ARGS[@]} -eq 0 ]; then
-        if [[ " ${MANAGERS[*]} " =~ " dnf " ]]; then
-             whiptail --msgbox "DNF updates detected. OK to proceed." 10 50
-             return
-        fi
-        whiptail --msgbox "No updates found!" 10 40
-        exit 0
-    fi
-
-    SELECTIONS=$(whiptail --title "System Updates" --checklist "Select packages:" 20 78 10 "${ARGS[@]}" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then exit 0; fi
-
-    SELECTIONS="${SELECTIONS//\"/}"
-    for sel in $SELECTIONS;
-    do
-        type=$(echo "$sel" | cut -d':' -f1)
-        pkg=$(echo "$sel" | cut -d':' -f2)
-        case $type in
-            APT) SELECTED_APT+=("$pkg") ;;
-            FLATPAK) SELECTED_FLATPAK+=("$pkg") ;;
-            SNAP) SELECTED_SNAP+=("$pkg") ;;
-        esac
-    done
-}
-
-# --- Execution & Recording ---
-
 BATCH_ID="BATCH_$(date +%s)"
 
 perform_updates() {
     echo "Update Report - $(date)" > "$REPORT_FILE"
     
-    # APT
-    if [ ${#SELECTED_APT[@]} -gt 0 ]; then
-        log "Processing APT updates..."
-        # Capture old versions individually (slow but necessary for safe rollback)
-        for pkg in "${SELECTED_APT[@]}"; do
-            old_ver=$(dpkg -s "$pkg" 2>/dev/null | grep '^Version:' | awk '{print $2}')
-            if [ -z "$old_ver" ]; then old_ver="NONE"; fi
-            # We don't know new version for sure until installed, but we have target from fetch
-            target_ver="${APT_UPDATES[$pkg]}"
-            
-            # Record intent
-            record_transaction "$(date -Iseconds)" "$BATCH_ID" "APT" "$pkg" "UPDATE" "$old_ver" "$target_ver"
-        done
+    for mgr in "${MANAGERS[@]}"; do
+        log "Processing $mgr updates..."
         
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${SELECTED_APT[@]}" >> "$RUN_LOG" 2>&1
-        echo "APT: Processed ${#SELECTED_APT[@]} packages." >> "$REPORT_FILE"
-    fi
-
-    # Flatpak
-    if [ ${#SELECTED_FLATPAK[@]} -gt 0 ]; then
-        log "Processing Flatpak updates..."
-        for item in "${SELECTED_FLATPAK[@]}"; do
-            # Parse Prefix
-            scope=$(echo "$item" | cut -d':' -f1)
-            app=$(echo "$item" | cut -d':' -f2)
-            
-            if [[ "$scope" == "USR" && -n "$SUDO_USER" ]]; then
-                 # User Update
-                 current_commit=$(sudo -u "$SUDO_USER" flatpak info --user "$app" | grep 'Commit:' | awk '{print $2}')
-                 sudo -u "$SUDO_USER" flatpak update --user -y "$app" >> "$RUN_LOG" 2>&1
-                 new_commit=$(sudo -u "$SUDO_USER" flatpak info --user "$app" | grep 'Commit:' | awk '{print $2}')
-            else
-                 # System Update (Default)
-                 # Handle legacy/fallback case where scope might be missing (though unlikely with new fetch)
-                 if [[ "$scope" != "SYS" && "$scope" != "USR" ]]; then app="$item"; fi
-                 
-                 current_commit=$(flatpak info "$app" | grep 'Commit:' | awk '{print $2}')
-                 flatpak update -y "$app" >> "$RUN_LOG" 2>&1
-                 new_commit=$(flatpak info "$app" | grep 'Commit:' | awk '{print $2}')
-            fi
-            
-            record_transaction "$(date -Iseconds)" "$BATCH_ID" "FLATPAK" "$app" "UPDATE" "$current_commit" "$new_commit"
-        done
-        echo "Flatpak: Updated ${#SELECTED_FLATPAK[@]} apps." >> "$REPORT_FILE"
-    fi
-
-    # Snap
-    if [ ${#SELECTED_SNAP[@]} -gt 0 ]; then
-        log "Processing Snap updates..."
-        for pkg in "${SELECTED_SNAP[@]}"; do
-            # Snap version is loosely defined, rollback uses 'snap revert' which handles state internally
-            # We record version for info
-            old_ver=$(snap list "$pkg" | awk 'NR==2 {print $2}')
-            
-            sudo snap refresh "$pkg" >> "$RUN_LOG" 2>&1
-            
-            new_ver=$(snap list "$pkg" | awk 'NR==2 {print $2}')
-            record_transaction "$(date -Iseconds)" "$BATCH_ID" "SNAP" "$pkg" "UPDATE" "$old_ver" "$new_ver"
-        done
-        echo "Snap: Updated ${#SELECTED_SNAP[@]} snaps." >> "$REPORT_FILE"
-    fi
-
-    # DNF (Bulk)
-    if [[ " ${MANAGERS[*]} " =~ " dnf " ]]; then
-        log "Running DNF Upgrade..."
-        # Get last ID
-        old_id=$(sudo dnf history | head -n 3 | tail -n 1 | awk '{print $1}')
-        
-        sudo dnf upgrade -y >> "$RUN_LOG" 2>&1
-        
-        new_id=$(sudo dnf history | head -n 3 | tail -n 1 | awk '{print $1}')
-        
-        # If ID changed, we record it
-        if [ "$old_id" != "$new_id" ]; then
-             # For DNF, we treat PACKAGE as "BULK_TRANSACTION" and OLD_VAL as the ID to undo
-             record_transaction "$(date -Iseconds)" "$BATCH_ID" "DNF" "BULK_TRANSACTION" "UPDATE" "$new_id" "N/A"
-             echo "DNF: System upgraded." >> "$REPORT_FILE"
-        fi
-    fi
+        case $mgr in
+            apt)
+                echo "[$mgr] Pending Updates:" >> "$REPORT_FILE"
+                apt list --upgradable 2>/dev/null | grep -v "Listing..." >> "$REPORT_FILE"
+                
+                sudo apt-get update -y >> "$RUN_LOG" 2>&1
+                
+                # Execution
+                sudo DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y > "$TEMP_DIR/apt_out" 2>&1
+                cat "$TEMP_DIR/apt_out" >> "$RUN_LOG"
+                
+                echo "[$mgr] Applied Updates:" >> "$REPORT_FILE"
+                grep -E "^(Inst|Setting up)" "$TEMP_DIR/apt_out" >> "$REPORT_FILE"
+                echo "--------------------------------" >> "$REPORT_FILE"
+                
+                # History Recording
+                grep "^Inst" "$TEMP_DIR/apt_out" | while read -r line; do
+                    pkg=$(echo "$line" | cut -d' ' -f2)
+                    ver=$(echo "$line" | cut -d'(' -f2 | cut -d')' -f1)
+                    record_transaction "$(date -Iseconds)" "$BATCH_ID" "APT" "$pkg" "UPDATE" "OLD" "$ver"
+                done
+                ;;
+            dnf)
+                echo "[$mgr] Pending Updates:" >> "$REPORT_FILE"
+                dnf check-update >> "$REPORT_FILE" 2>/dev/null
+                
+                sudo dnf upgrade -y > "$TEMP_DIR/dnf_out" 2>&1
+                cat "$TEMP_DIR/dnf_out" >> "$RUN_LOG"
+                
+                echo "[$mgr] Applied Updates:" >> "$REPORT_FILE"
+                grep -E "^(Upgrading|Installing):" "$TEMP_DIR/dnf_out" -A 1000 >> "$REPORT_FILE"
+                echo "--------------------------------" >> "$REPORT_FILE"
+                
+                new_id=$(sudo dnf history | head -n 3 | tail -n 1 | awk '{print $1}')
+                record_transaction "$(date -Iseconds)" "$BATCH_ID" "DNF" "BULK_TRANSACTION" "UPDATE" "$new_id" "N/A"
+                ;;
+            flatpak)
+                echo "[$mgr] Pending Updates:" >> "$REPORT_FILE"
+                flatpak update --system --dry-run 2>>"$RUN_LOG" >> "$REPORT_FILE"
+                if [ -n "$SUDO_USER" ]; then
+                     echo "--- User Flatpaks ($SUDO_USER) ---" >> "$REPORT_FILE"
+                     sudo -u "$SUDO_USER" flatpak update --user --dry-run 2>>"$RUN_LOG" >> "$REPORT_FILE"
+                fi
+                
+                log "Updating System Flatpaks..."
+                flatpak update -y > "$TEMP_DIR/flatpak_out" 2>&1
+                cat "$TEMP_DIR/flatpak_out" >> "$RUN_LOG"
+                
+                echo "[$mgr] Applied Updates (System):" >> "$REPORT_FILE"
+                if grep -q "Nothing to do" "$TEMP_DIR/flatpak_out"; then
+                    echo "No updates." >> "$REPORT_FILE"
+                else
+                    grep -E "^ [0-9]+\." "$TEMP_DIR/flatpak_out" >> "$REPORT_FILE"
+                fi
+                
+                if [ -n "$SUDO_USER" ]; then
+                    log "Updating User Flatpaks ($SUDO_USER)..."
+                    sudo -u "$SUDO_USER" flatpak update --user -y > "$TEMP_DIR/flatpak_user_out" 2>&1
+                    cat "$TEMP_DIR/flatpak_user_out" >> "$RUN_LOG"
+                    
+                    echo "[$mgr] Applied Updates (User):" >> "$REPORT_FILE"
+                    if grep -q "Nothing to do" "$TEMP_DIR/flatpak_user_out"; then
+                        echo "No updates." >> "$REPORT_FILE"
+                    else
+                        grep -E "^ [0-9]+\." "$TEMP_DIR/flatpak_user_out" >> "$REPORT_FILE"
+                    fi
+                fi
+                echo "--------------------------------" >> "$REPORT_FILE"
+                ;;
+            snap)
+                echo "[$mgr] Pending Updates:" >> "$REPORT_FILE"
+                snap refresh --list >> "$REPORT_FILE" 2>>"$RUN_LOG"
+                
+                sudo snap refresh > "$TEMP_DIR/snap_out" 2>&1
+                cat "$TEMP_DIR/snap_out" >> "$RUN_LOG"
+                
+                echo "[$mgr] Applied Updates:" >> "$REPORT_FILE"
+                grep "refreshed" "$TEMP_DIR/snap_out" >> "$REPORT_FILE"
+                echo "--------------------------------" >> "$REPORT_FILE"
+                ;;
+        esac
+    done
 }
 
 cleanup_system() {
@@ -393,16 +261,11 @@ check_reboot() {
     if [ -f /var/run/reboot-required ]; then
         REBOOT_REQUIRED=true
     elif command -v dnf &> /dev/null; then
-        if sudo dnf needs-restarting -r &>/dev/null;
-        then
-             # Exit code 1 means reboot needed
+        if sudo dnf needs-restarting -r &>/dev/null; then
              if [ $? -eq 1 ]; then REBOOT_REQUIRED=true; fi
         fi
     fi
-    
     if $REBOOT_REQUIRED; then
-        log "Reboot IS required."
-        echo "" >> "$REPORT_FILE"
         echo "*** REBOOT REQUIRED ***" >> "$REPORT_FILE"
     else
         echo "No reboot required." >> "$REPORT_FILE"
@@ -411,38 +274,20 @@ check_reboot() {
 
 send_email() {
     if [ -n "$EMAIL_ADDR" ]; then
-        log "Sending email report to $EMAIL_ADDR..."
-        if command -v mail &> /dev/null; then
-             cat "$REPORT_FILE" | mail -s "EzUpdate Report - $(hostname)" "$EMAIL_ADDR"
-        elif command -v sendmail &> /dev/null; then
-             # Simple sendmail wrapper
-             (
-                 echo "Subject: EzUpdate Report - $(hostname)"
-                 echo "To: $EMAIL_ADDR"
-                 echo ""
-                 cat "$REPORT_FILE"
-             ) | sendmail -t
-        elif command -v mutt &> /dev/null; then
-             cat "$REPORT_FILE" | mutt -s "EzUpdate Report - $(hostname)" -- "$EMAIL_ADDR"
-        else
-             log "Error: No suitable mail client found (checked: mail, sendmail, mutt)."
-        fi
+        log "Sending email to $EMAIL_ADDR..."
+        (echo "Subject: EzUpdate Report - $(hostname)"; echo ""; cat "$REPORT_FILE") | (mail -t "$EMAIL_ADDR" 2>/dev/null || sendmail -t "$EMAIL_ADDR" 2>/dev/null || mutt -s "EzUpdate Report" -- "$EMAIL_ADDR" 2>/dev/null || log "Mail failed.")
     fi
 }
 
-# --- Main Flow ---
-
-echo "Welcome to EzUpdate."
+# --- Execution ---
+echo "Welcome to EzUpdate (Auto-mode)."
 detect_managers
-fetch_updates
-present_plan
 perform_updates
 cleanup_system
 check_reboot
 send_email
 
-echo ""
 echo "----------------------------------------"
 cat "$REPORT_FILE"
 echo "----------------------------------------"
-echo "Detailed logs: $LOG_DIR"
+echo "Logs: $LOG_DIR"
