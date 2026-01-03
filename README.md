@@ -1,21 +1,16 @@
 # EzUpdate
 
-**EzUpdate** is a lightweight, unified system update wrapper for Linux. It automatically detects installed package managers (APT, DNF, Pacman, Flatpak, Snap) and provides a single command to update your entire system.
-
-It features an interactive terminal UI (TUI) allowing you to review and select specific updates, or a non-interactive mode for automated maintenance.
+**EzUpdate** is a comprehensive, multi-manager system update utility for Linux. It unifies updates for APT, DNF, Flatpak, and Snap into a single workflow with advanced safety features like rollback, logging, and reporting.
 
 ## Features
 
--   **Multi-Manager Support:** Automatically detects and handles:
-    -   `apt` (Debian, Ubuntu, Linux Mint, etc.)
-    -   `dnf` (Fedora, RHEL, CentOS)
-    -   `pacman` (Arch Linux, Manjaro) - *Detection only in this version*
-    -   `flatpak` (Universal)
-    -   `snap` (Universal)
--   **Interactive Selection:** Uses `whiptail` to present a checklist of available updates. You can deselect specific packages you don't want to upgrade yet.
--   **Automated Cleanup:** Automatically runs cleanup commands (like `autoremove` and cache cleaning) after updates are applied.
--   **Logging:** Keeps a detailed log of all operations (`ezupdate_run.log`) and a summary report (`ezupdate_report.txt`).
--   **Non-Interactive Mode:** Can be run via cron or scripts with the `-y` flag to auto-accept all updates.
+-   **Multi-Manager Support:** Automatically detects and handles `apt`, `dnf`, `flatpak`, and `snap`.
+-   **Interactive & Automated Modes:** Choose between a TUI checklist (`whiptail`) or a fully automated non-interactive mode.
+-   **Rollback Capability:** Record transaction history and revert changes if something goes wrong.
+-   **Detailed Logging:** Maintains a machine-readable history (CSV) and verbose execution logs.
+-   **Email Reporting:** Optionally email the update summary to an administrator.
+-   **Reboot Detection:** Automatically checks if a system reboot is required after updates.
+-   **Automated Cleanup:** Runs post-update cleanup (autoremove, cache clearing).
 
 ## Installation
 
@@ -32,46 +27,52 @@ It features an interactive terminal UI (TUI) allowing you to review and select s
 
 ## Usage
 
-To run EzUpdate, simply execute the script. Sudo privileges are required for system updates.
-
 ```bash
-sudo ./ezupdate.sh
+sudo ./ezupdate.sh [options]
 ```
 
 ### Options
 
-| Flag | Long Flag | Description |
-| :--- | :--- | :--- |
-| `-h` | `--help` | Show the help message and exit. |
-| `-y` | `--yes` | **Non-Interactive Mode.** Automatically select all updates and skip the UI. Useful for automated maintenance scripts. |
+| Flag | Description |
+| :--- | :--- |
+| `-h`, `--help` | Show the help message. |
+| `-y`, `--yes` | **Non-Interactive Mode.** Auto-accept all updates. Ideal for cron jobs. |
+| `--rollback <file>` | **Rollback Mode.** Revert changes based on a log file. Use `latest` to rollback the last run. |
+| `--email <address>` | Email the report to the specified address upon completion. |
+| `--log-dir <path>` | Specify a custom directory for logs (Default: `/var/log/ezupdate` or `~/.ezupdate/logs`). |
 
-### Example: Automated Nightly Updates
+## Examples
 
-You can add EzUpdate to your root crontab to run nightly at 3 AM:
+**Standard Interactive Update:**
+```bash
+sudo ./ezupdate.sh
+```
 
-1.  Open crontab: `sudo crontab -e`
-2.  Add the line:
-    ```cron
-    0 3 * * * /path/to/ezupdate/ezupdate.sh -y
-    ```
+**Automated Nightly Update with Email Report:**
+```bash
+sudo ./ezupdate.sh -y --email admin@example.com
+```
 
-## Requirements
+**Rollback the Last Update:**
+```bash
+sudo ./ezupdate.sh --rollback latest
+```
 
--   **Bash**
--   **Whiptail** (optional, for the interactive UI).
-    -   Ubuntu/Debian: `sudo apt install whiptail`
-    -   Fedora: `sudo dnf install newt`
-    -   *If whiptail is missing, the script defaults to updating all packages.*
+## Rollback Details
 
-## How It Works
+EzUpdate tracks the specific versions or commit hashes (for Flatpak) of updated packages.
+-   **APT:** Attempts to install the previously installed version (`apt install pkg=old_ver`). *Note: Requires the old version to be present in repositories/cache.*
+-   **Flatpak:** Reverts to the previous commit hash.
+-   **Snap:** Uses `snap revert`.
+-   **DNF:** Uses `dnf history undo`.
 
-1.  **Detection:** The script checks your path for package manager binaries.
-2.  **Fetch:** It runs the "check update" command for each detected manager (e.g., `apt update`, `flatpak remote-ls`).
-3.  **Plan:** It compiles a list of upgradable packages.
-4.  **Present:** (Interactive mode) It shows you the list. You uncheck what you want to skip.
-5.  **Execute:** It runs the specific install commands for selected packages (or bulk upgrade for DNF).
-6.  **Cleanup:** It runs maintenance commands like `apt autoremove` or `flatpak uninstall --unused`.
+## Logs
+
+Logs are stored in `/var/log/ezupdate/` (if run as root) or `~/.ezupdate/logs/`.
+-   `history.csv`: Machine-readable transaction log used for rollbacks.
+-   `ezupdate_run.log`: Verbose output of all commands executed.
+-   `ezupdate_report.txt`: Summary of the last run.
 
 ## License
 
-MIT License. Feel free to fork and modify.
+MIT License.
