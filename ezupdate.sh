@@ -212,14 +212,23 @@ fetch_updates() {
                 dnf check-update > "$TEMP_DIR/dnf_raw" 2>>"$RUN_LOG"
                 ;;
             flatpak)
-                flatpak remote-ls --updates --columns=application,name,commit > "$TEMP_DIR/flatpak_raw" 2>>"$RUN_LOG"
-                while read -r line;
-                do
+                # Check System Flatpaks
+                flatpak remote-ls --updates --columns=application,name,commit > "$TEMP_DIR/flatpak_raw_sys" 2>>"$RUN_LOG"
+                while read -r line; do
                     app_id=$(echo "$line" | awk '{print $1}')
-                    # Just storing name for UI
                     name=$(echo "$line" | cut -d' ' -f2-)
-                    if [ -n "$app_id" ]; then FLATPAK_UPDATES["$app_id"]="$name"; fi
-                done < "$TEMP_DIR/flatpak_raw"
+                    if [ -n "$app_id" ]; then FLATPAK_UPDATES["SYS:$app_id"]="$name (System)"; fi
+                done < "$TEMP_DIR/flatpak_raw_sys"
+
+                # Check User Flatpaks (if running as sudo)
+                if [ -n "$SUDO_USER" ]; then
+                    sudo -u "$SUDO_USER" flatpak remote-ls --user --updates --columns=application,name,commit > "$TEMP_DIR/flatpak_raw_user" 2>>"$RUN_LOG"
+                    while read -r line; do
+                        app_id=$(echo "$line" | awk '{print $1}')
+                        name=$(echo "$line" | cut -d' ' -f2-)
+                        if [ -n "$app_id" ]; then FLATPAK_UPDATES["USR:$app_id"]="$name (User)"; fi
+                    done < "$TEMP_DIR/flatpak_raw_user"
+                fi
                 ;;
             snap)
                 snap refresh --list > "$TEMP_DIR/snap_raw" 2>>"$RUN_LOG"
@@ -306,14 +315,25 @@ perform_updates() {
     # Flatpak
     if [ ${#SELECTED_FLATPAK[@]} -gt 0 ]; then
         log "Processing Flatpak updates..."
-        for app in "${SELECTED_FLATPAK[@]}"; do
-            # Get current commit
-            current_commit=$(flatpak info "$app" | grep 'Commit:' | awk '{print $2}')
+        for item in "${SELECTED_FLATPAK[@]}"; do
+            # Parse Prefix
+            scope=$(echo "$item" | cut -d':' -f1)
+            app=$(echo "$item" | cut -d':' -f2)
             
-            flatpak update -y "$app" >> "$RUN_LOG" 2>&1
-            
-            # Get new commit
-            new_commit=$(flatpak info "$app" | grep 'Commit:' | awk '{print $2}')
+            if [[ "$scope" == "USR" && -n "$SUDO_USER" ]]; then
+                 # User Update
+                 current_commit=$(sudo -u "$SUDO_USER" flatpak info --user "$app" | grep 'Commit:' | awk '{print $2}')
+                 sudo -u "$SUDO_USER" flatpak update --user -y "$app" >> "$RUN_LOG" 2>&1
+                 new_commit=$(sudo -u "$SUDO_USER" flatpak info --user "$app" | grep 'Commit:' | awk '{print $2}')
+            else
+                 # System Update (Default)
+                 # Handle legacy/fallback case where scope might be missing (though unlikely with new fetch)
+                 if [[ "$scope" != "SYS" && "$scope" != "USR" ]]; then app="$item"; fi
+                 
+                 current_commit=$(flatpak info "$app" | grep 'Commit:' | awk '{print $2}')
+                 flatpak update -y "$app" >> "$RUN_LOG" 2>&1
+                 new_commit=$(flatpak info "$app" | grep 'Commit:' | awk '{print $2}')
+            fi
             
             record_transaction "$(date -Iseconds)" "$BATCH_ID" "FLATPAK" "$app" "UPDATE" "$current_commit" "$new_commit"
         done
