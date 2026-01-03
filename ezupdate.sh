@@ -265,7 +265,7 @@ present_plan() {
     SELECTIONS=$(whiptail --title "System Updates" --checklist "Select packages:" 20 78 10 "${ARGS[@]}" 3>&1 1>&2 2>&3)
     if [ $? -ne 0 ]; then exit 0; fi
 
-    SELECTIONS="${SELECTIONS//"/}"
+    SELECTIONS="${SELECTIONS//\"/}"
     for sel in $SELECTIONS;
     do
         type=$(echo "$sel" | cut -d':' -f1)
@@ -394,8 +394,18 @@ send_email() {
         log "Sending email report to $EMAIL_ADDR..."
         if command -v mail &> /dev/null; then
              cat "$REPORT_FILE" | mail -s "EzUpdate Report - $(hostname)" "$EMAIL_ADDR"
+        elif command -v sendmail &> /dev/null; then
+             # Simple sendmail wrapper
+             (
+                 echo "Subject: EzUpdate Report - $(hostname)"
+                 echo "To: $EMAIL_ADDR"
+                 echo ""
+                 cat "$REPORT_FILE"
+             ) | sendmail -t
+        elif command -v mutt &> /dev/null; then
+             cat "$REPORT_FILE" | mutt -s "EzUpdate Report - $(hostname)" -- "$EMAIL_ADDR"
         else
-             log "Error: 'mail' command not found. Cannot send email."
+             log "Error: No suitable mail client found (checked: mail, sendmail, mutt)."
         fi
     fi
 }
