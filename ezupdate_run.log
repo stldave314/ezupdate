@@ -1,0 +1,14 @@
+[10:44:03] Detecting package managers...
+[10:44:03] Detected: APT
+[10:44:03] Detected: Flatpak
+[10:44:03] Fetching updates...
+Hit:2 https://deb.nodesource.com/node_20.x nodistro InRelease
+Hit:3 https://download.docker.com/linux/ubuntu noble InRelease
+Hit:4 http://apt.pop-os.org/proprietary noble InRelease
+Hit:5 http://apt.pop-os.org/release noble InRelease
+Hit:1 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.30/deb  InRelease
+Hit:6 http://apt.pop-os.org/ubuntu noble InRelease
+Hit:7 http://apt.pop-os.org/ubuntu noble-security InRelease
+Hit:8 http://apt.pop-os.org/ubuntu noble-updates InRelease
+Hit:9 http://apt.pop-os.org/ubuntu noble-backports InRelease
+Reading package lists...
